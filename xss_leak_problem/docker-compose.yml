@@ -1,0 +1,15 @@
+services:
+  web:
+    build: .
+    command:
+      - sh
+      - -lc
+      - npm start
+    ports:
+      - "1337:1337"
+    environment:
+      - NODE_ENV=production
+      - PORT=1337
+      - DOMAIN=example.localhost
+      - DISABLE_SOCKET_POOL_RANDOMIZATION=false
+      - MIRROR_FLAG_TO_EXPLOIT_ORIGIN=false
