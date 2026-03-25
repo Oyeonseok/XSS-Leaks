@@ -1,0 +1,16 @@
+{
+  "name": "xss-leak-practice",
+  "version": "1.0.0",
+  "description": "Cross-site subdomain leak practice lab",
+  "main": "src/victim/server.js",
+  "scripts": {
+    "start": "node src/victim/server.js",
+    "check": "node -c src/victim/app.js && node -c src/victim/bot.js && node -c src/victim/config.js && node -c src/victim/server.js && node -c ../attacker/app.js && node -c ../attacker/server.js"
+  },
+  "dependencies": {
+    "ejs": "^3.1.9",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "puppeteer-core": "21.11.0"
+  }
+}
