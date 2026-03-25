@@ -1,4 +1,4 @@
-# Cross-Site Subdomain Leak Writeup
+# Cross-Site Subdomain Leak Solve.md
 
 ## 목차
 
