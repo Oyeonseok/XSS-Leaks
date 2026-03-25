@@ -47,6 +47,88 @@ attacker 페이지는 두 모드로 나뉩니다.
 
 이 분리 덕분에 사용자는 로그만 보고, 실제 공격은 bot 이 연 브라우저 컨텍스트에서 수행됩니다.
 
+## 익스플로잇 단계
+
+아래 순서가 실제 익스가 진행되는 흐름입니다. 구현을 따라가려면 `attacker/exploit.html` 의 `runViewerMode()`, `runAutorunMode()`, `executeLeakRun()`, `measureOracleDecision()` 순서로 보면 됩니다.
+
+### 단계 1. viewer mode 진입
+
+사용자가 `http://attacker.localhost:1337/index.html` 에 접속하면 기본적으로 viewer mode 로 열립니다. 이 모드는 공격을 직접 수행하지 않고, 화면에 로그만 보여주는 역할을 합니다.
+
+viewer mode 는 처음 열릴 때 victim 쪽 `/report` 엔드포인트로 같은 페이지의 `?autorun=1` URL 을 신고합니다. 이 단계가 "bot에게 실제 익스를 수행시켜 달라"는 트리거입니다.
+
+### 단계 2. bot 이 victim 환경 준비
+
+bot 은 먼저 victim origin 을 방문한 뒤, 해당 origin 의 `localStorage.flag` 에 실제 플래그를 저장합니다. 그 다음 신고된 attacker `?autorun=1` 페이지를 방문합니다.
+
+이 시점부터 공격자는 victim 페이지 안의 값을 직접 읽는 대신, bot 브라우저 안에서 발생하는 victim 요청의 처리 순서를 timing 으로 관찰하게 됩니다.
+
+### 단계 3. autorun mode 시작
+
+bot 이 여는 attacker 페이지는 autorun mode 로 실행됩니다. autorun mode 는 새 victim 창을 하나 열고, 이후 이 창의 hash 를 계속 바꿔 victim 페이지가 내부적으로 `http://<hex(flag)>.<DOMAIN>:<PORT>` 요청을 다시 보내게 만듭니다.
+
+즉, autorun mode 는 실제 공격 오케스트레이터이고, victim 창은 누출 대상 역할을 합니다.
+
+### 단계 4. baseline 측정으로 threshold 계산
+
+실제 누출 전에 먼저 timing 기준값을 측정합니다.
+
+1. attacker probe 요청의 기본 지연
+2. victim origin 요청의 기본 지연
+3. `000000.<attacker-host>` 폰트 요청의 기본 지연
+
+이 세 값을 합쳐 threshold 를 자동 보정합니다. 이 threshold 는 이후 candidate probe 가 "정상적으로 빨리 끝난 것인지" 아니면 "대기열 때문에 막혀 늦어진 것인지"를 판정하는 기준이 됩니다.
+
+### 단계 5. connection pool 고갈
+
+attacker 는 자신의 sleep 서버로 장시간 요청을 `255`개 열어 대부분의 연결 슬롯을 점유합니다. 이렇게 하면 브라우저에 사실상 마지막 슬롯 하나만 남게 되고, 특정 요청이 그 슬롯을 언제 잡는지를 timing 으로 관찰할 수 있습니다.
+
+이 단계가 없으면 victim 요청과 candidate 요청의 상대적 순서를 timing 차이로 안정적으로 보기 어렵습니다.
+
+### 단계 6. victim 요청과 candidate 요청을 대기열에 올림
+
+문자 하나를 판정할 때마다 attacker 는 다음 순서로 행동합니다.
+
+1. blocker 요청으로 마지막 슬롯까지 막습니다.
+2. victim 창의 hash 를 바꿔 victim 요청을 대기열에 올립니다.
+3. 현재 추측값 `candidateHex` 로 attacker probe 요청을 대기열에 올립니다.
+
+이 시점에는 victim 요청과 candidate 요청 둘 다 바로 처리되지 못하고, 마지막 슬롯이 풀리기만 기다리는 상태가 됩니다.
+
+### 단계 7. `000000...` 기준 요청 전송
+
+그 다음 blocker 를 끊어 마지막 슬롯 하나를 풀고, 즉시 `000000.<attacker-host>` 로 짧은 요청을 하나 더 보냅니다.
+
+이 요청의 목적은 값 자체를 누출하는 것이 아니라, "이제 남아 있는 요청들의 처리 순서를 안정적으로 비교할 기준점"을 만드는 것입니다. 블로그에서 설명한 것처럼 `000000...` 은 항상 더 작은 호스트이므로 기준 요청 역할을 합니다.
+
+핵심은 `000000...` 뒤에 대기 중이던 두 요청인
+
+- victim 의 `http://<hex(flag)>...`
+- attacker 의 `http://<candidateHex>ffffff...`
+
+이 둘 중 무엇이 먼저 처리되는지를 간접 관찰하는 것입니다.
+
+### 단계 8. candidate 요청의 완료 시간으로 순서 판정
+
+현재 구현은 `candidate` 요청이 언제 끝났는지를 측정합니다.
+
+- candidate 가 빨리 끝나면: `000000...` 다음 순서에서 candidate 가 victim 보다 앞섰다고 해석
+- candidate 가 늦게 끝나면: victim 이 먼저 처리되고 candidate 가 한 번 더 기다렸다고 해석
+
+즉, 현재 oracle 은 "candidate 요청이 threshold 안에 끝났는가"로 표현되지만, 본질적으로는 `000000...` 이후 victim 과 candidate 중 누가 먼저 처리되었는지를 보는 구조입니다.
+
+### 단계 9. binary search 로 다음 hex 문자 결정
+
+이 판정을 이용해 `0-9a-f` 범위를 binary search 로 줄여 나갑니다. 중간 문자 하나를 골라 여러 번 측정하고, blocked 판정의 다수결 결과에 따라 lower half 또는 upper half 를 버립니다.
+
+이 과정을 반복하면 다음 hex 문자 하나가 결정되고, 그 문자를 현재 누출값 뒤에 붙입니다.
+
+### 단계 10. `}` 가 나올 때까지 반복
+
+초기값은 이미 알고 있는 `wsl{` 의 hex 인 `77736c7b` 입니다. 이후 hex 문자를 하나씩 더 복원해 나가다가 decode 된 문자열에 `}` 가 등장하면 종료합니다.
+
+최종적으로 viewer mode 에는 복원된 문자열과 hex 값이 함께 표시됩니다.
+
 ## Oracle 구성
 
 ### 1. connection pool 고갈
@@ -144,3 +226,4 @@ threshold =
 - victim 창 warmup 을 먼저 수행해 첫 `hashchange` 누락 가능성 완화
 
 즉, 핵심 아이디어는 동일하지만 현재 저장소는 "동작 원리 설명용 PoC" 보다 "재현 가능한 로컬 실습 환경"에 더 가깝습니다.
+
